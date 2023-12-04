@@ -13,15 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from command import PagedCommand
-
-class Status(PagedCommand):
-  common = True
-  helpSummary = "Show the working tree status"
-  helpUsage = """
-%prog [<project>...]
-"""
-
-  def Execute(self, opt, args):
-    for project in self.GetProjects(args):
-      project.PrintWorkTreeStatus()
+class Remote(object):
+  def __init__(self, name,
+               fetch=None,
+               review=None,
+               projectName=None):
+    self.name = name
+    self.fetchUrl = fetch
+    self.reviewUrl = review
+    self.projectName = projectName
+    self.requiredCommits = []

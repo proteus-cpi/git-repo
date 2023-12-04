@@ -13,30 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import os
-import platform
-import re
-import shutil
 import sys
 
-from pyversion import is_python3
-if is_python3():
-  import urllib.parse
-else:
-  import imp
-  import urlparse
-  urllib = imp.new_module('urllib')
-  urllib.parse = urlparse
-
 from color import Coloring
-from command import InteractiveCommand, MirrorSafeCommand
+from command import InteractiveCommand
 from error import ManifestParseError
-from project import SyncBuffer
-from git_config import GitConfig
-from git_command import git_require, MIN_GIT_VERSION
+from remote import Remote
+from git_command import git, MIN_GIT_VERSION
 
-class Init(InteractiveCommand, MirrorSafeCommand):
+class Init(InteractiveCommand):
   common = True
   helpSummary = "Initialize repo in the current directory"
   helpUsage = """
@@ -123,7 +109,7 @@ to update the working directory files.
                  help='disable use of /clone.bundle on HTTP/HTTPS')
 
     # Tool
-    g = p.add_option_group('repo Version options')
+    g = p.add_option_group('Version options')
     g.add_option('--repo-url',
                  dest='repo_url',
                  help='repo repository location', metavar='URL')
@@ -134,49 +120,39 @@ to update the working directory files.
                  dest='no_repo_verify', action='store_true',
                  help='do not verify repo source code')
 
-    # Other
-    g = p.add_option_group('Other options')
-    g.add_option('--config-name',
-                 dest='config_name', action="store_true", default=False,
-                 help='Always prompt for name/e-mail')
+  def _CheckGitVersion(self):
+    ver_str = git.version()
+    if not ver_str.startswith('git version '):
+      print >>sys.stderr, 'error: "%s" unsupported' % ver_str
+      sys.exit(1)
 
-  def _RegisteredEnvironmentOptions(self):
-    return {'REPO_MANIFEST_URL': 'manifest_url',
-            'REPO_MIRROR_LOCATION': 'reference'}
+    ver_str = ver_str[len('git version '):].strip()
+    ver_act = tuple(map(lambda x: int(x), ver_str.split('.')[0:3]))
+    if ver_act < MIN_GIT_VERSION:
+      need = '.'.join(map(lambda x: str(x), MIN_GIT_VERSION))
+      print >>sys.stderr, 'fatal: git %s or later required' % need
+      sys.exit(1)
 
   def _SyncManifest(self, opt):
     m = self.manifest.manifestProject
-    is_new = not m.Exists
 
-    if is_new:
+    if not m.Exists:
       if not opt.manifest_url:
-        print('fatal: manifest url (-u) is required.', file=sys.stderr)
+        print >>sys.stderr, 'fatal: manifest url (-u) is required.'
         sys.exit(1)
 
       if not opt.quiet:
-        print('Get %s' % GitConfig.ForUser().UrlInsteadOf(opt.manifest_url),
-              file=sys.stderr)
-
-      # The manifest project object doesn't keep track of the path on the
-      # server where this git is located, so let's save that here.
-      mirrored_manifest_git = None
-      if opt.reference:
-        manifest_git_path = urllib.parse.urlparse(opt.manifest_url).path[1:]
-        mirrored_manifest_git = os.path.join(opt.reference, manifest_git_path)
-        if not mirrored_manifest_git.endswith(".git"):
-          mirrored_manifest_git += ".git"
-        if not os.path.exists(mirrored_manifest_git):
-          mirrored_manifest_git = os.path.join(opt.reference + '/.repo/manifests.git')
-
-      m._InitGitDir(mirror_git=mirrored_manifest_git)
+        print >>sys.stderr, 'Getting manifest ...'
+        print >>sys.stderr, '   from %s' % opt.manifest_url
+      m._InitGitDir()
 
       if opt.manifest_branch:
-        m.revisionExpr = opt.manifest_branch
+        m.revision = opt.manifest_branch
       else:
-        m.revisionExpr = 'refs/heads/master'
+        m.revision = 'refs/heads/master'
     else:
       if opt.manifest_branch:
-        m.revisionExpr = opt.manifest_branch
+        m.revision = opt.manifest_branch
       else:
         m.PreSync()
 
@@ -255,60 +231,30 @@ to update the working directory files.
 
   def _LinkManifest(self, name):
     if not name:
-      print('fatal: manifest name (-m) is required.', file=sys.stderr)
+      print >>sys.stderr, 'fatal: manifest name (-m) is required.'
       sys.exit(1)
 
     try:
       self.manifest.Link(name)
-    except ManifestParseError as e:
-      print("fatal: manifest '%s' not available" % name, file=sys.stderr)
-      print('fatal: %s' % str(e), file=sys.stderr)
+    except ManifestParseError, e:
+      print >>sys.stderr, "fatal: manifest '%s' not available" % name
+      print >>sys.stderr, 'fatal: %s' % str(e)
       sys.exit(1)
 
-  def _Prompt(self, prompt, value):
-    sys.stdout.write('%-10s [%s]: ' % (prompt, value))
-    a = sys.stdin.readline().strip()
-    if a == '':
-      return value
-    return a
-
-  def _ShouldConfigureUser(self):
-    gc = self.manifest.globalConfig
+  def _PromptKey(self, prompt, key, value):
     mp = self.manifest.manifestProject
 
-    # If we don't have local settings, get from global.
-    if not mp.config.Has('user.name') or not mp.config.Has('user.email'):
-      if not gc.Has('user.name') or not gc.Has('user.email'):
-        return True
-
-      mp.config.SetString('user.name', gc.GetString('user.name'))
-      mp.config.SetString('user.email', gc.GetString('user.email'))
-
-    print()
-    print('Your identity is: %s <%s>' % (mp.config.GetString('user.name'),
-                                         mp.config.GetString('user.email')))
-    print('If you want to change this, please re-run \'repo init\' with --config-name')
-    return False
+    sys.stdout.write('%-10s [%s]: ' % (prompt, value))
+    a = sys.stdin.readline().strip()
+    if a != '' and a != value:
+      mp.config.SetString(key, a)
 
   def _ConfigureUser(self):
     mp = self.manifest.manifestProject
 
-    while True:
-      print()
-      name  = self._Prompt('Your Name', mp.UserName)
-      email = self._Prompt('Your Email', mp.UserEmail)
-
-      print()
-      print('Your identity is: %s <%s>' % (name, email))
-      sys.stdout.write('is this correct [y/N]? ')
-      a = sys.stdin.readline().strip().lower()
-      if a in ('yes', 'y', 't', 'true'):
-        break
-
-    if name != mp.UserName:
-      mp.config.SetString('user.name', name)
-    if email != mp.UserEmail:
-      mp.config.SetString('user.email', email)
+    print ''
+    self._PromptKey('Your Name', 'user.name', mp.UserName)
+    self._PromptKey('Your Email', 'user.email', mp.UserEmail)
 
   def _HasColorSet(self, gc):
     for n in ['ui', 'diff', 'status']:
@@ -327,83 +273,39 @@ to update the working directory files.
         self._on = True
     out = _Test()
 
-    print()
-    print("Testing colorized output (for 'repo diff', 'repo status'):")
+    print ''
+    print "Testing colorized output (for 'repo diff', 'repo status'):"
 
-    for c in ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan']:
+    for c in ['black','red','green','yellow','blue','magenta','cyan']:
       out.write(' ')
       out.printer(fg=c)(' %-6s ', c)
     out.write(' ')
     out.printer(fg='white', bg='black')(' %s ' % 'white')
     out.nl()
 
-    for c in ['bold', 'dim', 'ul', 'reverse']:
+    for c in ['bold','dim','ul','reverse']:
       out.write(' ')
       out.printer(fg='black', attr=c)(' %-6s ', c)
     out.nl()
 
-    sys.stdout.write('Enable color display in this user account (y/N)? ')
+    sys.stdout.write('Enable color display in this user account (y/n)? ')
     a = sys.stdin.readline().strip().lower()
     if a in ('y', 'yes', 't', 'true', 'on'):
       gc.SetString('color.ui', 'auto')
 
-  def _ConfigureDepth(self, opt):
-    """Configure the depth we'll sync down.
-
-    Args:
-      opt: Options from optparse.  We care about opt.depth.
-    """
-    # Opt.depth will be non-None if user actually passed --depth to repo init.
-    if opt.depth is not None:
-      if opt.depth > 0:
-        # Positive values will set the depth.
-        depth = str(opt.depth)
-      else:
-        # Negative numbers will clear the depth; passing None to SetString
-        # will do that.
-        depth = None
-
-      # We store the depth in the main manifest project.
-      self.manifest.manifestProject.config.SetString('repo.depth', depth)
-
-  def _DisplayResult(self):
-    if self.manifest.IsMirror:
-      init_type = 'mirror '
-    else:
-      init_type = ''
-
-    print()
-    print('repo %shas been initialized in %s'
-          % (init_type, self.manifest.topdir))
-
-    current_dir = os.getcwd()
-    if current_dir != self.manifest.topdir:
-      print('If this is not the directory in which you want to initialize '
-            'repo, please run:')
-      print('   rm -r %s/.repo' % self.manifest.topdir)
-      print('and try again.')
-
   def Execute(self, opt, args):
-    git_require(MIN_GIT_VERSION, fail=True)
-
-    if opt.reference:
-      opt.reference = os.path.expanduser(opt.reference)
-
-    # Check this here, else manifest will be tagged "not new" and init won't be
-    # possible anymore without removing the .repo/manifests directory.
-    if opt.archive and opt.mirror:
-      print('fatal: --mirror and --archive cannot be used together.',
-            file=sys.stderr)
-      sys.exit(1)
-
+    self._CheckGitVersion()
     self._SyncManifest(opt)
     self._LinkManifest(opt.manifest_name)
 
-    if os.isatty(0) and os.isatty(1) and not self.manifest.IsMirror:
-      if opt.config_name or self._ShouldConfigureUser():
-        self._ConfigureUser()
+    if os.isatty(0) and os.isatty(1) and not opt.mirror:
+      self._ConfigureUser()
       self._ConfigureColor()
 
-    self._ConfigureDepth(opt)
+    if opt.mirror:
+      type = 'mirror '
+    else:
+      type = ''
 
-    self._DisplayResult()
+    print ''
+    print 'repo %sinitialized in %s' % (type, self.manifest.topdir)

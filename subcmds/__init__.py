@@ -15,7 +15,7 @@
 
 import os
 
-all_commands = {}
+all = {}
 
 my_dir = os.path.dirname(__file__)
 for py in os.listdir(my_dir):
@@ -38,12 +38,12 @@ for py in os.listdir(my_dir):
     try:
       cmd = getattr(mod, clsn)()
     except AttributeError:
-      raise SyntaxError('%s/%s does not define class %s' % (
-                         __name__, py, clsn))
+      raise SyntaxError, '%s/%s does not define class %s' % (
+                         __name__, py, clsn)
 
     name = name.replace('_', '-')
     cmd.NAME = name
-    all_commands[name] = cmd
+    all[name] = cmd
 
-if 'help' in all_commands:
-  all_commands['help'].commands = all_commands
+if 'help' in all:
+  all['help'].commands = all

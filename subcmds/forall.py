@@ -19,8 +19,6 @@ import errno
 import multiprocessing
 import re
 import os
-import select
-import signal
 import sys
 import subprocess
 import portable
@@ -42,75 +40,26 @@ class ForallColoring(Coloring):
     self.project = self.printer('project', attr='bold')
 
 
-class Forall(Command, MirrorSafeCommand):
+class Forall(Command):
   common = False
   helpSummary = "Run a shell command in each project"
   helpUsage = """
 %prog [<project>...] -c <command> [<arg>...]
-%prog -r str1 [str2] ... -c <command> [<arg>...]"
 """
   helpDescription = """
 Executes the same shell command in each project.
 
-The -r option allows running the command only on projects matching
-regex or wildcard expression.
-
-Output Formatting
------------------
-
-The -p option causes '%prog' to bind pipes to the command's stdin,
-stdout and stderr streams, and pipe all output into a continuous
-stream that is displayed in a single pager session.  Project headings
-are inserted before the output of each command is displayed.  If the
-command produces no output in a project, no heading is displayed.
-
-The formatting convention used by -p is very suitable for some
-types of searching, e.g. `repo forall -p -c git log -SFoo` will
-print all commits that add or remove references to Foo.
-
-The -v option causes '%prog' to display stderr messages if a
-command produces output only on stderr.  Normally the -p option
-causes command output to be suppressed until the command produces
-at least one byte of output on stdout.
-
 Environment
 -----------
-
-pwd is the project's working directory.  If the current client is
-a mirror client, then pwd is the Git repository.
+pwd is the project's working directory.
 
 REPO_PROJECT is set to the unique name of the project.
-
-REPO_PATH is the path relative the the root of the client.
-
-REPO_REMOTE is the name of the remote system from the manifest.
-
-REPO_LREV is the name of the revision from the manifest, translated
-to a local tracking branch.  If you need to pass the manifest
-revision to a locally executed git command, use REPO_LREV.
-
-REPO_RREV is the name of the revision from the manifest, exactly
-as written in the manifest.
-
-REPO_COUNT is the total number of projects being iterated.
-
-REPO_I is the current (1-based) iteration count. Can be used in
-conjunction with REPO_COUNT to add a simple progress indicator to your
-command.
-
-REPO__* are any extra environment variables, specified by the
-"annotation" element under any project element.  This can be useful
-for differentiating trees based on user-specific criteria, or simply
-annotating tree details.
 
 shell positional arguments ($1, $2, .., $#) are set to any arguments
 following <command>.
 
-Unless -p is used, stdin, stdout, stderr are inherited from the
-terminal and are not redirected.
-
-If -e is used, when a command exits unsuccessfully, '%prog' will abort
-without iterating through the remaining projects.
+stdin, stdout, stderr are inherited from the terminal and are
+not redirected.
 """
 
   def _Options(self, p):
@@ -132,46 +81,6 @@ without iterating through the remaining projects.
                  dest='command',
                  action='callback',
                  callback=cmd)
-    p.add_option('-e', '--abort-on-errors',
-                 dest='abort_on_errors', action='store_true',
-                 help='Abort if a command exits unsuccessfully')
-
-    g = p.add_option_group('Output')
-    g.add_option('-p',
-                 dest='project_header', action='store_true',
-                 help='Show project headers before output')
-    g.add_option('-v', '--verbose',
-                 dest='verbose', action='store_true',
-                 help='Show command error messages')
-    g.add_option('-j', '--jobs',
-                 dest='jobs', action='store', type='int', default=1,
-                 help='number of commands to execute simultaneously')
-
-  def WantPager(self, opt):
-    return opt.project_header and opt.jobs == 1
-
-  def _SerializeProject(self, project):
-    """ Serialize a project._GitGetByExec instance.
-
-    project._GitGetByExec is not pickle-able. Instead of trying to pass it
-    around between processes, make a dict ourselves containing only the
-    attributes that we need.
-
-    """
-    if not self.manifest.IsMirror:
-      lrev = project.GetRevisionId()
-    else:
-      lrev = None
-    return {
-      'name': project.name,
-      'relpath': project.relpath,
-      'remote_name': project.remote.name,
-      'lrev': lrev,
-      'rrev': project.revisionExpr,
-      'annotations': dict((a.name, a.value) for a in project.annotations),
-      'gitdir': project.gitdir,
-      'worktree': project.worktree,
-    }
 
   def Execute(self, opt, args):
     if not opt.command:

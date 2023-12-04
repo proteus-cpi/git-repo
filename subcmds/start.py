@@ -13,32 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-import os
 import sys
-
 from command import Command
-from git_config import IsId
 from git_command import git
-import gitc_utils
-from progress import Progress
-from project import SyncBuffer
 
 class Start(Command):
   common = True
   helpSummary = "Start a new branch for development"
   helpUsage = """
-%prog <newbranchname> [--all | <project>...]
-"""
-  helpDescription = """
-'%prog' begins a new branch of development, starting from the
-revision specified in the manifest.
-"""
+%prog <newbranchname> [<project>...]
 
-  def _Options(self, p):
-    p.add_option('--all',
-                 dest='all', action='store_true',
-                 help='begin branch in all projects')
+This subcommand starts a new branch of development that is automatically
+pulled from a remote branch.
+
+It is equivalent to the following git commands:
+
+"git branch --track <newbranchname> m/<codeline>",
+or 
+"git checkout --track -b <newbranchname> m/<codeline>".
+
+All three forms set up the config entries that repo bases some of its
+processing on.  Use %prog or git branch or checkout with --track to ensure
+the configuration data is set up properly.
+
+"""
 
   def Execute(self, opt, args):
     if not args:
@@ -46,7 +44,7 @@ revision specified in the manifest.
 
     nb = args[0]
     if not git.check_ref_format('heads/%s' % nb):
-      print("error: '%s' is not a valid name" % nb, file=sys.stderr)
+      print >>sys.stderr, "error: '%s' is not a valid name" % nb
       sys.exit(1)
 
     err = []

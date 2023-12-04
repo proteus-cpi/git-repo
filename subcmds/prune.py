@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 from color import Coloring
 from command import PagedCommand
 
@@ -25,11 +24,11 @@ class Prune(PagedCommand):
 """
 
   def Execute(self, opt, args):
-    all_branches = []
+    all = []
     for project in self.GetProjects(args):
-      all_branches.extend(project.PruneHeads())
+      all.extend(project.PruneHeads())
 
-    if not all_branches:
+    if not all:
       return
 
     class Report(Coloring):
@@ -37,13 +36,13 @@ class Prune(PagedCommand):
         Coloring.__init__(self, config, 'status')
         self.project = self.printer('header', attr='bold')
 
-    out = Report(all_branches[0].project.config)
+    out = Report(all[0].project.config)
     out.project('Pending Branches')
     out.nl()
 
     project = None
 
-    for branch in all_branches:
+    for branch in all:
       if project != branch.project:
         project = branch.project
         out.nl()
@@ -52,9 +51,9 @@ class Prune(PagedCommand):
 
       commits = branch.commits
       date = branch.date
-      print('%s %-33s (%2d commit%s, %s)' % (
+      print '%s %-33s (%2d commit%s, %s)' % (
             branch.name == project.CurrentBranch and '*' or ' ',
             branch.name,
             len(commits),
             len(commits) != 1 and 's' or ' ',
-            date))
+            date)

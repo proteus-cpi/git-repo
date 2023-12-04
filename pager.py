@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import os
 import select
 import sys
@@ -23,7 +22,7 @@ active = False
 def RunPager(globalConfig):
   global active
 
-  if not os.isatty(0) or not os.isatty(1):
+  if not os.isatty(0):
     return
   pager = _SelectPager(globalConfig)
   if pager == '' or pager == 'cat':
@@ -50,8 +49,8 @@ def RunPager(globalConfig):
 
     _BecomePager(pager)
   except Exception:
-    print("fatal: cannot start pager '%s'" % pager, file=sys.stderr)
-    sys.exit(255)
+    print >>sys.stderr, "fatal: cannot start pager '%s'" % pager
+    os.exit(255)
 
 def _SelectPager(globalConfig):
   try:
@@ -75,11 +74,11 @@ def _BecomePager(pager):
   # ready works around a long-standing bug in popularly
   # available versions of 'less', a better 'more'.
   #
-  _a, _b, _c = select.select([0], [], [0])
+  a, b, c = select.select([0], [], [0])
 
   os.environ['LESS'] = 'FRSX'
 
   try:
     os.execvp(pager, [pager])
-  except OSError:
+  except OSError, e:
     os.execv('/bin/sh', ['sh', '-c', pager])

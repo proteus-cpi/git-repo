@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import os
 import portable
 import re
@@ -41,10 +40,9 @@ class Editor(object):
     if e:
       return e
 
-    if cls.globalConfig:
-      e = cls.globalConfig.GetString('core.editor')
-      if e:
-        return e
+    e = cls.globalConfig.GetString('core.editor')
+    if e:
+      return e
 
     e = os.getenv('VISUAL')
     if e:
@@ -55,10 +53,10 @@ class Editor(object):
       return e
 
     if os.getenv('TERM') == 'dumb':
-      print(
+      print >>sys.stderr,\
 """No editor specified in GIT_EDITOR, core.editor, VISUAL or EDITOR.
 Tried to fall back to vi but terminal is dumb.  Please configure at
-least one of these before using this command.""", file=sys.stderr)
+least one of these before using this command."""
       sys.exit(1)
 
     return 'vi'
@@ -69,14 +67,11 @@ least one of these before using this command.""", file=sys.stderr)
 
        Args:
          data        : the text to edit
-
+  
       Returns:
         new value of edited text; None if editing did not succeed
     """
     editor = cls._GetEditor()
-    if editor == ':':
-      return data
-
     fd, path = tempfile.mkstemp()
     try:
       os.write(fd, data)

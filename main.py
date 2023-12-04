@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/bin/sh
 #
 # Copyright (C) 2008 The Android Open Source Project
 #
@@ -14,16 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-import getpass
-import imp
-import netrc
+magic='--calling-python-from-/bin/sh--'
+"""exec" python -E "$0" "$@" """#$magic"
+if __name__ == '__main__':
+  import sys
+  if sys.argv[-1] == '#%s' % magic:
+    del sys.argv[-1]
+del magic
+
 import optparse
 import os
 import portable
 import subprocess
+import re
 import sys
-import time
 
 from pyversion import is_python3
 if is_python3():
@@ -47,24 +51,12 @@ from command import MirrorSafeCommand
 from command import GitcAvailableCommand, GitcClientCommand
 from subcmds.version import Version
 from editor import Editor
-from error import DownloadError
-from error import InvalidProjectGroupsError
-from error import ManifestInvalidRevisionError
-from error import ManifestParseError
-from error import NoManifestException
 from error import NoSuchProjectError
 from error import RepoChangedException
-import gitc_utils
-from manifest_xml import GitcManifest, XmlManifest
+from manifest import Manifest
 from pager import RunPager
-from wrapper import WrapperPath, Wrapper
 
-from subcmds import all_commands
-
-if not is_python3():
-  # pylint:disable=W0622
-  input = raw_input
-  # pylint:enable=W0622
+from subcmds import all as all_commands
 
 global_options = optparse.OptionParser(
                  usage="repo [-p|--paginate|--no-pager] COMMAND [ARGS]"
@@ -75,32 +67,17 @@ global_options.add_option('-p', '--paginate',
 global_options.add_option('--no-pager',
                           dest='no_pager', action='store_true',
                           help='disable the pager')
-global_options.add_option('--color',
-                          choices=('auto', 'always', 'never'), default=None,
-                          help='control color usage: auto, always, never')
-global_options.add_option('--trace',
-                          dest='trace', action='store_true',
-                          help='trace git command execution')
-global_options.add_option('--time',
-                          dest='time', action='store_true',
-                          help='time repo command execution')
-global_options.add_option('--version',
-                          dest='show_version', action='store_true',
-                          help='display this version of repo')
 
 class _Repo(object):
   def __init__(self, repodir):
     self.repodir = repodir
     self.commands = all_commands
-    # add 'branch' as an alias for 'branches'
-    all_commands['branch'] = all_commands['branches']
 
   def _Run(self, argv):
-    result = 0
     name = None
     glob = []
 
-    for i in range(len(argv)):
+    for i in xrange(0, len(argv)):
       if not argv[i].startswith('-'):
         name = argv[i]
         if i > 0:
@@ -111,34 +88,18 @@ class _Repo(object):
       glob = argv
       name = 'help'
       argv = []
-    gopts, _gargs = global_options.parse_args(glob)
-
-    if gopts.trace:
-      SetTrace()
-    if gopts.show_version:
-      if name == 'help':
-        name = 'version'
-      else:
-        print('fatal: invalid usage of --version', file=sys.stderr)
-        return 1
-
-    SetDefaultColoring(gopts.color)
+    gopts, gargs = global_options.parse_args(glob)
 
     try:
       cmd = self.commands[name]
     except KeyError:
-      print("repo: '%s' is not a repo command.  See 'repo help'." % name,
-            file=sys.stderr)
-      return 1
+      print >>sys.stderr,\
+            "repo: '%s' is not a repo command.  See 'repo help'."\
+            % name
+      sys.exit(1)
 
     cmd.repodir = self.repodir
-    cmd.manifest = XmlManifest(cmd.repodir)
-    cmd.gitc_manifest = None
-    gitc_client_name = gitc_utils.parse_clientdir(os.getcwd())
-    if gitc_client_name:
-      cmd.gitc_manifest = GitcManifest(cmd.repodir, gitc_client_name)
-      cmd.manifest.isGitcClient = True
-
+    cmd.manifest = Manifest(cmd.repodir)
     Editor.globalConfig = cmd.manifest.globalConfig
 
     if not isinstance(cmd, MirrorSafeCommand) and cmd.manifest.IsMirror:
@@ -173,89 +134,70 @@ class _Repo(object):
       else:
         use_pager = config.GetBoolean('pager.%s' % name)
         if use_pager is None:
-          use_pager = cmd.WantPager(copts)
+          use_pager = isinstance(cmd, PagedCommand)
       if use_pager:
-        # RunPager(cmd)
-        portable.RunPager(cmd)
-    else:
-      portable.NoPager(cmd)
+        RunPager(config)
 
-    start = time.time()
+    copts, cargs = cmd.OptionParser.parse_args(argv)
     try:
-      result = cmd.Execute(copts, cargs)
-    except (DownloadError, ManifestInvalidRevisionError,
-        NoManifestException) as e:
-      print('error: in `%s`: %s' % (' '.join([name] + argv), str(e)),
-        file=sys.stderr)
-      if isinstance(e, NoManifestException):
-        print('error: manifest missing or unreadable -- please run init',
-              file=sys.stderr)
-      result = 1
-    except NoSuchProjectError as e:
+      cmd.Execute(copts, cargs)
+    except NoSuchProjectError, e:
       if e.name:
-        print('error: project %s not found' % e.name, file=sys.stderr)
+        print >>sys.stderr, 'error: project %s not found' % e.name
       else:
-        print('error: no project in current directory', file=sys.stderr)
-      result = 1
-    except InvalidProjectGroupsError as e:
-      if e.name:
-        print('error: project group must be enabled for project %s' % e.name, file=sys.stderr)
-      else:
-        print('error: project group must be enabled for the project in the current directory', file=sys.stderr)
-      result = 1
-    finally:
-      elapsed = time.time() - start
-      hours, remainder = divmod(elapsed, 3600)
-      minutes, seconds = divmod(remainder, 60)
-      if gopts.time:
-        if hours == 0:
-          print('real\t%dm%.3fs' % (minutes, seconds), file=sys.stderr)
-        else:
-          print('real\t%dh%dm%.3fs' % (hours, minutes, seconds),
-                file=sys.stderr)
+        print >>sys.stderr, 'error: no project in current directory'
+      sys.exit(1)
 
-    return result
+def _MyWrapperPath():
+  return os.path.join(os.path.dirname(__file__), 'repo')
 
-
-def _MyRepoPath():
-  return os.path.dirname(__file__)
-
+def _CurrentWrapperVersion():
+  VERSION = None
+  pat = re.compile(r'^VERSION *=')
+  fd = open(_MyWrapperPath())
+  for line in fd:
+    if pat.match(line):
+      fd.close()
+      exec line
+      return VERSION
+  raise NameError, 'No VERSION in repo script'
 
 def _CheckWrapperVersion(ver, repo_path):
   if not repo_path:
     repo_path = '~/bin/repo'
 
   if not ver:
-    print('no --wrapper-version argument', file=sys.stderr)
-    sys.exit(1)
+     print >>sys.stderr, 'no --wrapper-version argument'
+     sys.exit(1)
 
-  exp = Wrapper().VERSION
-  ver = tuple(map(int, ver.split('.')))
+  exp = _CurrentWrapperVersion()
+  ver = tuple(map(lambda x: int(x), ver.split('.')))
   if len(ver) == 1:
     ver = (0, ver[0])
 
-  exp_str = '.'.join(map(str, exp))
   if exp[0] > ver[0] or ver < (0, 4):
-    print("""
+    exp_str = '.'.join(map(lambda x: str(x), exp))
+    print >>sys.stderr, """
 !!! A new repo command (%5s) is available.    !!!
 !!! You must upgrade before you can continue:   !!!
 
     cp %s %s
-""" % (exp_str, WrapperPath(), repo_path), file=sys.stderr)
+""" % (exp_str, _MyWrapperPath(), repo_path)
     sys.exit(1)
 
   if exp > ver:
-    print("""
+    exp_str = '.'.join(map(lambda x: str(x), exp))
+    print >>sys.stderr, """
 ... A new repo command (%5s) is available.
 ... You should upgrade soon:
 
     cp %s %s
-""" % (exp_str, WrapperPath(), repo_path), file=sys.stderr)
+""" % (exp_str, _MyWrapperPath(), repo_path)
 
-def _CheckRepoDir(repo_dir):
-  if not repo_dir:
-    print('no --repo-dir argument', file=sys.stderr)
-    sys.exit(1)
+def _CheckRepoDir(dir):
+  if not dir:
+     print >>sys.stderr, 'no --repo-dir argument'
+     sys.exit(1)
 
 def _PruneOptions(argv, opt):
   i = 0
@@ -486,8 +428,6 @@ def init_http():
   urllib.request.install_opener(urllib.request.build_opener(*handlers))
 
 def _Main(argv):
-  result = 0
-
   opt = optparse.OptionParser(usage="repo wrapperinfo -- ...")
   opt.add_option("--repo-dir", dest="repodir",
                  help="path to .repo/")
@@ -501,24 +441,12 @@ def _Main(argv):
   _CheckWrapperVersion(opt.wrapper_version, opt.wrapper_path)
   _CheckRepoDir(opt.repodir)
 
-  Version.wrapper_version = opt.wrapper_version
-  Version.wrapper_path = opt.wrapper_path
-
   repo = _Repo(opt.repodir)
   try:
-    try:
-      init_ssh()
-      init_http()
-      result = repo._Run(argv) or 0
-    finally:
-      close_ssh()
+    repo._Run(argv)
   except KeyboardInterrupt:
-    print('aborted by user', file=sys.stderr)
-    result = 1
-  except ManifestParseError as mpe:
-    print('fatal: %s' % mpe, file=sys.stderr)
-    result = 1
-  except RepoChangedException as rce:
+    sys.exit(1)
+  except RepoChangedException, rce:
     # If repo changed, re-exec ourselves.
     #
     argv = list(sys.argv)

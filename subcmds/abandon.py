@@ -13,11 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import sys
 from command import Command
 from git_command import git
-from progress import Progress
 
 class Abandon(Command):
   common = True
@@ -37,35 +35,8 @@ It is equivalent to "git branch -D <branchname>".
 
     nb = args[0]
     if not git.check_ref_format('heads/%s' % nb):
-      print("error: '%s' is not a valid name" % nb, file=sys.stderr)
+      print >>sys.stderr, "error: '%s' is not a valid name" % nb
       sys.exit(1)
 
-    nb = args[0]
-    err = []
-    success = []
-    all_projects = self.GetProjects(args[1:])
-
-    pm = Progress('Abandon %s' % nb, len(all_projects))
-    for project in all_projects:
-      pm.update()
-
-      status = project.AbandonBranch(nb)
-      if status is not None:
-        if status:
-          success.append(project)
-        else:
-          err.append(project)
-    pm.end()
-
-    if err:
-      for p in err:
-        print("error: %s/: cannot abandon %s" % (p.relpath, nb),
-              file=sys.stderr)
-      sys.exit(1)
-    elif not success:
-      print('error: no project has branch %s' % nb, file=sys.stderr)
-      sys.exit(1)
-    else:
-      print('Abandoned in %d project(s):\n  %s'
-            % (len(success), '\n  '.join(p.relpath for p in success)),
-            file=sys.stderr)
+    for project in self.GetProjects(args[1:]):
+      project.AbandonBranch(nb)

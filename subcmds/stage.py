@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
 import sys
 
 from color import Coloring
@@ -49,19 +48,19 @@ The '%prog' command stages files to prepare the next commit.
       self.Usage()
 
   def _Interactive(self, opt, args):
-    all_projects = [p for p in self.GetProjects(args) if p.IsDirty()]
-    if not all_projects:
-      print('no projects have uncommitted modifications', file=sys.stderr)
+    all = filter(lambda x: x.IsDirty(), self.GetProjects(args))
+    if not all:
+      print >>sys.stderr,'no projects have uncommitted modifications'
       return
 
     out = _ProjectList(self.manifest.manifestProject.config)
     while True:
-      out.header('        %s', 'project')
+      out.header('        %-20s %s', 'project', 'path')
       out.nl()
 
-      for i in range(len(all_projects)):
-        p = all_projects[i]
-        out.write('%3d:    %s', i + 1, p.relpath + '/')
+      for i in xrange(0, len(all)):
+        p = all[i]
+        out.write('%3d:    %-20s %s', i + 1, p.name, p.relpath + '/')
         out.nl()
       out.nl()
 
@@ -94,15 +93,15 @@ The '%prog' command stages files to prepare the next commit.
       if a_index is not None:
         if a_index == 0:
           break
-        if 0 < a_index and a_index <= len(all_projects):
-          _AddI(all_projects[a_index - 1])
+        if 0 < a_index and a_index <= len(all):
+          _AddI(all[a_index - 1])
           continue
 
-      projects = [p for p in all_projects if a in [p.name, p.relpath]]
-      if len(projects) == 1:
-        _AddI(projects[0])
+      p = filter(lambda x: x.name == a or x.relpath == a, all)
+      if len(p) == 1:
+        _AddI(p[0])
         continue
-    print('Bye.')
+    print 'Bye.'
 
 def _AddI(project):
   p = GitCommand(project, ['add', '--interactive'], bare=False)

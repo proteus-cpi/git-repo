@@ -16,19 +16,17 @@
 from __future__ import print_function
 #import fcntl
 import os
-import select
 import sys
 import subprocess
 import portable
 import tempfile
 from signal import SIGTERM
 from error import GitError
-from trace import REPO_TRACE, IsTrace, Trace
-from wrapper import Wrapper
 
 GIT = 'git'
 MIN_GIT_VERSION = (1, 5, 4)
 GIT_DIR = 'GIT_DIR'
+REPO_TRACE = 'REPO_TRACE'
 
 LAST_GITDIR = None
 LAST_CWD = None
@@ -93,21 +91,8 @@ class _GitCall(object):
   def version(self):
     p = GitCommand(None, ['--version'], capture_stdout=True)
     if p.Wait() == 0:
-      if hasattr(p.stdout, 'decode'):
-        return p.stdout.decode('utf-8')
-      else:
-        return p.stdout
+      return p.stdout
     return None
-
-  def version_tuple(self):
-    global _git_version
-    if _git_version is None:
-      ver_str = git.version()
-      _git_version = Wrapper().ParseGitVersion(ver_str)
-      if _git_version is None:
-        print('fatal: "%s" unsupported' % ver_str, file=sys.stderr)
-        sys.exit(1)
-    return _git_version
 
   def __getattr__(self, name):
     name = name.replace('_','-')
@@ -118,19 +103,6 @@ class _GitCall(object):
     return fun
 git = _GitCall()
 
-def git_require(min_version, fail=False):
-  git_version = git.version_tuple()
-  if min_version <= git_version:
-    return True
-  if fail:
-    need = '.'.join(map(str, min_version))
-    print('fatal: git %s or later required' % need, file=sys.stderr)
-    sys.exit(1)
-  return False
-
-def _setenv(env, name, value):
-  env[name] = value.encode()
-
 class GitCommand(object):
   def __init__(self,
                project,
@@ -140,23 +112,19 @@ class GitCommand(object):
                capture_stdout = False,
                capture_stderr = False,
                disable_editor = False,
-               ssh_proxy = False,
                cwd = None,
                gitdir = None):
-    env = os.environ.copy()
+    env = dict(os.environ)
 
-    for key in [REPO_TRACE,
+    for e in [REPO_TRACE,
               GIT_DIR,
               'GIT_ALTERNATE_OBJECT_DIRECTORIES',
               'GIT_OBJECT_DIRECTORY',
               'GIT_WORK_TREE',
               'GIT_GRAFT_FILE',
               'GIT_INDEX_FILE']:
-      if key in env:
-        del env[key]
-
-    # If we are not capturing std* then need to print it.
-    self.tee = {'stdout': not capture_stdout, 'stderr': not capture_stderr}
+      if e in env:
+        del env[e]
 
     if disable_editor:
       _setenv(env, 'GIT_EDITOR', ':')
@@ -182,25 +150,26 @@ class GitCommand(object):
     command = [GIT]
     if bare:
       if gitdir:
-        _setenv(env, GIT_DIR, gitdir)
+        env[GIT_DIR] = gitdir
       cwd = None
-    command.append(cmdv[0])
-    # Need to use the --progress flag for fetch/clone so output will be
-    # displayed as by default git only does progress output if stderr is a TTY.
-    if sys.stderr.isatty() and cmdv[0] in ('fetch', 'clone'):
-      if '--progress' not in cmdv and '--quiet' not in cmdv:
-        command.append('--progress')
-    command.extend(cmdv[1:])
+    command.extend(cmdv)
 
     if provide_stdin:
       stdin = subprocess.PIPE
     else:
       stdin = None
 
-    stdout = subprocess.PIPE
-    stderr = subprocess.PIPE
+    if capture_stdout:
+      stdout = subprocess.PIPE
+    else:
+      stdout = None
 
-    if IsTrace():
+    if capture_stderr:
+      stderr = subprocess.PIPE
+    else:
+      stderr = None
+
+    if TRACE:
       global LAST_CWD
       global LAST_GITDIR
 
@@ -226,7 +195,7 @@ class GitCommand(object):
         dbg += ' 1>|'
       if stderr == subprocess.PIPE:
         dbg += ' 2>|'
-      Trace('%s', dbg)
+      print >>sys.stderr, dbg
 
     try:
       p = subprocess.Popen(command,
@@ -235,24 +204,13 @@ class GitCommand(object):
                            stdin = stdin,
                            stdout = stdout,
                            stderr = stderr)
-    except Exception as e:
+    except Exception, e:
       raise GitError('%s: %s' % (command[1], e))
-
-    if ssh_proxy:
-      _add_ssh_client(p)
 
     self.process = p
     self.stdin = p.stdin
 
   def Wait(self):
-    try:
-      p = self.process
-      rc = self._CaptureOutput()
-    finally:
-      _remove_ssh_client(p)
-    return rc
-
-  def _CaptureOutput(self):
     p = self.process
     # s_in = [_sfd(p.stdout, sys.stdout, 'stdout'),
     #         _sfd(p.stderr, sys.stderr, 'stderr')]

@@ -13,10 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-import json
-import netrc
-from optparse import SUPPRESS_HELP
 import os
 import re
 import portable
@@ -85,8 +81,7 @@ class _FetchError(Exception):
   """Internal error thrown in _FetchHelper() when we don't want stack trace."""
   pass
 
-class Sync(Command, MirrorSafeCommand):
-  jobs = 1
+class Sync(Command):
   common = True
   helpSummary = "Update working tree to the latest revision"
   helpUsage = """
@@ -253,21 +248,12 @@ later is required to fix a server side protocol bug.
     g.add_option('--no-repo-verify',
                  dest='no_repo_verify', action='store_true',
                  help='do not verify repo source code')
-    g.add_option('--repo-upgraded',
+    p.add_option('--repo-upgraded',
                  dest='repo_upgraded', action='store_true',
-                 help=SUPPRESS_HELP)
+                 help='perform additional actions after a repo upgrade')
 
-  def _FetchProjectList(self, opt, projects, *args, **kwargs):
-    """Main function of the fetch threads when jobs are > 1.
-
-    Delegates most of the work to _FetchHelper.
-
-    Args:
-      opt: Program options returned from optparse.  See _Options().
-      projects: Projects to fetch.
-      *args, **kwargs: Remaining arguments to pass to _FetchHelper. See the
-          _FetchHelper docstring for details.
-    """
+  def _Fetch(self, *projects):
+    fetched = set()
     for project in projects:
       success = self._FetchHelper(opt, project, *args, **kwargs)
       if not success and not opt.force_broken:
@@ -380,22 +366,8 @@ later is required to fix a server side protocol bug.
         threads.add(t)
         t.start()
       else:
-        self._FetchProjectList(**kwargs)
-
-    for t in threads:
-      t.join()
-
-    # If we saw an error, exit with code 1 so that other scripts can check.
-    if err_event.isSet():
-      print('\nerror: Exited sync due to fetch errors', file=sys.stderr)
-      sys.exit(1)
-
-    pm.end()
-    self._fetch_times.Save()
-
-    if not self.manifest.IsArchive:
-      self._GCProjects(projects)
-
+        print >>sys.stderr, 'error: Cannot fetch %s' % project.name
+        sys.exit(1)
     return fetched
 
   def _GCProjects(self, projects):
@@ -571,143 +543,6 @@ later is required to fix a server side protocol bug.
     return 0
 
   def Execute(self, opt, args):
-    if opt.jobs:
-      self.jobs = opt.jobs
-    if self.jobs > 1:
-      soft_limit, _ = _rlimit_nofile()
-      self.jobs = min(self.jobs, (soft_limit - 5) / 3)
-
-    if opt.network_only and opt.detach_head:
-      print('error: cannot combine -n and -d', file=sys.stderr)
-      sys.exit(1)
-    if opt.network_only and opt.local_only:
-      print('error: cannot combine -n and -l', file=sys.stderr)
-      sys.exit(1)
-    if opt.manifest_name and opt.smart_sync:
-      print('error: cannot combine -m and -s', file=sys.stderr)
-      sys.exit(1)
-    if opt.manifest_name and opt.smart_tag:
-      print('error: cannot combine -m and -t', file=sys.stderr)
-      sys.exit(1)
-    if opt.manifest_server_username or opt.manifest_server_password:
-      if not (opt.smart_sync or opt.smart_tag):
-        print('error: -u and -p may only be combined with -s or -t',
-              file=sys.stderr)
-        sys.exit(1)
-      if None in [opt.manifest_server_username, opt.manifest_server_password]:
-        print('error: both -u and -p must be given', file=sys.stderr)
-        sys.exit(1)
-
-    if opt.manifest_name:
-      self.manifest.Override(opt.manifest_name)
-
-    manifest_name = opt.manifest_name
-    smart_sync_manifest_name = "smart_sync_override.xml"
-    smart_sync_manifest_path = os.path.join(
-      self.manifest.manifestProject.worktree, smart_sync_manifest_name)
-
-    if opt.smart_sync or opt.smart_tag:
-      if not self.manifest.manifest_server:
-        print('error: cannot smart sync: no manifest server defined in '
-              'manifest', file=sys.stderr)
-        sys.exit(1)
-
-      manifest_server = self.manifest.manifest_server
-      if not opt.quiet:
-        print('Using manifest server %s' % manifest_server)
-
-      if not '@' in manifest_server:
-        username = None
-        password = None
-        if opt.manifest_server_username and opt.manifest_server_password:
-          username = opt.manifest_server_username
-          password = opt.manifest_server_password
-        else:
-          try:
-            info = netrc.netrc()
-          except IOError:
-            # .netrc file does not exist or could not be opened
-            pass
-          else:
-            try:
-              parse_result = urllib.parse.urlparse(manifest_server)
-              if parse_result.hostname:
-                auth = info.authenticators(parse_result.hostname)
-                if auth:
-                  username, _account, password = auth
-                else:
-                  print('No credentials found for %s in .netrc'
-                        % parse_result.hostname, file=sys.stderr)
-            except netrc.NetrcParseError as e:
-              print('Error parsing .netrc file: %s' % e, file=sys.stderr)
-
-        if (username and password):
-          manifest_server = manifest_server.replace('://', '://%s:%s@' %
-                                                    (username, password),
-                                                    1)
-
-      transport = PersistentTransport(manifest_server)
-      if manifest_server.startswith('persistent-'):
-        manifest_server = manifest_server[len('persistent-'):]
-
-      try:
-        server = xmlrpc.client.Server(manifest_server, transport=transport)
-        if opt.smart_sync:
-          p = self.manifest.manifestProject
-          b = p.GetBranch(p.CurrentBranch)
-          branch = b.merge
-          if branch.startswith(R_HEADS):
-            branch = branch[len(R_HEADS):]
-
-          env = os.environ.copy()
-          if 'SYNC_TARGET' in env:
-            target = env['SYNC_TARGET']
-            [success, manifest_str] = server.GetApprovedManifest(branch, target)
-          elif 'TARGET_PRODUCT' in env and 'TARGET_BUILD_VARIANT' in env:
-            target = '%s-%s' % (env['TARGET_PRODUCT'],
-                                env['TARGET_BUILD_VARIANT'])
-            [success, manifest_str] = server.GetApprovedManifest(branch, target)
-          else:
-            [success, manifest_str] = server.GetApprovedManifest(branch)
-        else:
-          assert(opt.smart_tag)
-          [success, manifest_str] = server.GetManifest(opt.smart_tag)
-
-        if success:
-          manifest_name = smart_sync_manifest_name
-          try:
-            f = open(smart_sync_manifest_path, 'w')
-            try:
-              f.write(manifest_str)
-            finally:
-              f.close()
-          except IOError as e:
-            print('error: cannot write manifest to %s:\n%s'
-                  % (smart_sync_manifest_path, e),
-                  file=sys.stderr)
-            sys.exit(1)
-          self._ReloadManifest(manifest_name)
-        else:
-          print('error: manifest server RPC call failed: %s' %
-                manifest_str, file=sys.stderr)
-          sys.exit(1)
-      except (socket.error, IOError, xmlrpc.client.Fault) as e:
-        print('error: cannot connect to manifest server %s:\n%s'
-              % (self.manifest.manifest_server, e), file=sys.stderr)
-        sys.exit(1)
-      except xmlrpc.client.ProtocolError as e:
-        print('error: cannot connect to manifest server %s:\n%d %s'
-              % (self.manifest.manifest_server, e.errcode, e.errmsg),
-              file=sys.stderr)
-        sys.exit(1)
-    else:  # Not smart sync or smart tag mode
-      if os.path.isfile(smart_sync_manifest_path):
-        try:
-          os.remove(smart_sync_manifest_path)
-        except OSError as e:
-          print('error: failed to remove existing smart sync override manifest: %s' %
-                e, file=sys.stderr)
-
     rp = self.manifest.repoProject
     rp.PreSync()
 
@@ -715,18 +550,26 @@ later is required to fix a server side protocol bug.
     mp.PreSync()
 
     if opt.repo_upgraded:
-      _PostRepoUpgrade(self.manifest, quiet=opt.quiet)
+      for project in self.manifest.projects.values():
+        if project.Exists:
+          project.PostRepoUpgrade()
 
-    if not opt.local_only:
-      mp.Sync_NetworkHalf(quiet=opt.quiet,
-                          current_branch_only=opt.current_branch_only,
-                          no_tags=opt.no_tags,
-                          optimized_fetch=opt.optimized_fetch)
+    all = self.GetProjects(args, missing_ok=True)
+    fetched = self._Fetch(rp, mp, *all)
+
+    if rp.HasChanges:
+      print >>sys.stderr, 'info: A new version of repo is available'
+      print >>sys.stderr, ''
+      if opt.no_repo_verify or _VerifyTag(rp):
+        if not rp.Sync_LocalHalf():
+          sys.exit(1)
+        print >>sys.stderr, 'info: Restarting repo with latest version'
+        raise RepoChangedException(['--repo-upgraded'])
+      else:
+        print >>sys.stderr, 'warning: Skipped upgrade to unverified version'
 
     if mp.HasChanges:
-      syncbuf = SyncBuffer(mp.config)
-      mp.Sync_LocalHalf(syncbuf)
-      if not syncbuf.Finish():
+      if not mp.Sync_LocalHalf():
         sys.exit(1)
       self._ReloadManifest(manifest_name)
       if opt.jobs is None:
@@ -820,70 +663,41 @@ later is required to fix a server side protocol bug.
     for project in all_projects:
       pm.update()
       if project.worktree:
-        project.Sync_LocalHalf(syncbuf, force_sync=opt.force_sync)
-    pm.end()
-    print(file=sys.stderr)
-    if not syncbuf.Finish():
-      sys.exit(1)
+        if not project.Sync_LocalHalf():
+          sys.exit(1)
 
-    # If there's a notice that's supposed to print at the end of the sync, print
-    # it now...
-    if self.manifest.notice:
-      print(self.manifest.notice)
-
-def _PostRepoUpgrade(manifest, quiet=False):
-  wrapper = Wrapper()
-  if wrapper.NeedSetupGnuPG():
-    wrapper.SetupGnuPG(quiet)
-  for project in manifest.projects:
-    if project.Exists:
-      project.PostRepoUpgrade()
-
-def _PostRepoFetch(rp, no_repo_verify=False, verbose=False):
-  if rp.HasChanges:
-    print('info: A new version of repo is available', file=sys.stderr)
-    print(file=sys.stderr)
-    if no_repo_verify or _VerifyTag(rp):
-      syncbuf = SyncBuffer(rp.config)
-      rp.Sync_LocalHalf(syncbuf)
-      if not syncbuf.Finish():
-        sys.exit(1)
-      print('info: Restarting repo with latest version', file=sys.stderr)
-      raise RepoChangedException(['--repo-upgraded'])
-    else:
-      print('warning: Skipped upgrade to unverified version', file=sys.stderr)
-  else:
-    if verbose:
-      print('repo version %s is current' % rp.work_git.describe(HEAD),
-            file=sys.stderr)
 
 def _VerifyTag(project):
   gpg_dir = os.path.expanduser('~/.repoconfig-esrlabs/gnupg')
   if not os.path.exists(gpg_dir):
-    print('warning: GnuPG was not available during last "repo init"\n'
-          'warning: Cannot automatically authenticate repo."""',
-          file=sys.stderr)
+    print >>sys.stderr,\
+"""warning: GnuPG was not available during last "repo init"
+warning: Cannot automatically authenticate repo."""
     return True
 
+  remote = project.GetRemote(project.remote.name)
+  ref = remote.ToLocal(project.revision)
+
   try:
-    cur = project.bare_git.describe(project.GetRevisionId())
+    cur = project.bare_git.describe(ref)
   except GitError:
     cur = None
 
   if not cur \
      or re.compile(r'^.*-[0-9]{1,}-g[0-9a-f]{1,}$').match(cur):
-    rev = project.revisionExpr
+    rev = project.revision
     if rev.startswith(R_HEADS):
       rev = rev[len(R_HEADS):]
 
-    print(file=sys.stderr)
-    print("warning: project '%s' branch '%s' is not signed"
-          % (project.name, rev), file=sys.stderr)
+    print >>sys.stderr
+    print >>sys.stderr,\
+      "warning: project '%s' branch '%s' is not signed" \
+      % (project.name, rev)
     return False
 
-  env = os.environ.copy()
-  env['GIT_DIR'] = project.gitdir.encode()
-  env['GNUPGHOME'] = gpg_dir.encode()
+  env = dict(os.environ)
+  env['GIT_DIR'] = project.gitdir
+  env['GNUPGHOME'] = gpg_dir
 
   cmd = [GIT, 'tag', '-v', cur]
   proc = subprocess.Popen(cmd,
@@ -897,10 +711,10 @@ def _VerifyTag(project):
   proc.stderr.close()
 
   if proc.wait() != 0:
-    print(file=sys.stderr)
-    print(out, file=sys.stderr)
-    print(err, file=sys.stderr)
-    print(file=sys.stderr)
+    print >>sys.stderr
+    print >>sys.stderr, out
+    print >>sys.stderr, err
+    print >>sys.stderr
     return False
   return True
 

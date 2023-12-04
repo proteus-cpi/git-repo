@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-import re
 import sys
 from formatter import AbstractFormatter, DumbWriter
 
@@ -22,7 +20,7 @@ from color import Coloring
 from command import PagedCommand, MirrorSafeCommand, GitcAvailableCommand, GitcClientCommand
 import gitc_utils
 
-class Help(PagedCommand, MirrorSafeCommand):
+class Help(PagedCommand):
   common = False
   helpSummary = "Display detailed help on a command"
   helpUsage = """
@@ -33,9 +31,12 @@ Displays detailed usage information about a command.
 """
 
   def _PrintAllCommands(self):
-    print('usage: repo COMMAND [ARGS]')
-    print('The complete list of recognized repo commands are:')
-    commandNames = list(sorted(self.commands))
+    print 'usage: repo COMMAND [ARGS]'
+    print """
+The complete list of recognized repo commands are:
+"""
+    commandNames = self.commands.keys()
+    commandNames.sort()
 
     maxlen = 0
     for name in commandNames:
@@ -48,9 +49,10 @@ Displays detailed usage information about a command.
         summary = command.helpSummary.strip()
       except AttributeError:
         summary = ''
-      print(fmt % (name, summary))
-    print("See 'repo help <command>' for more information on a "
-          'specific command.')
+      print fmt % (name, summary)
+    print """
+See 'repo help <command>' for more information on a specific command.
+"""
 
   def _PrintCommonCommands(self):
     print('usage: repo COMMAND [ARGS]')
@@ -82,10 +84,10 @@ Displays detailed usage information about a command.
         summary = command.helpSummary.strip()
       except AttributeError:
         summary = ''
-      print(fmt % (name, summary))
-    print(
-"See 'repo help <command>' for more information on a specific command.\n"
-"See 'repo help --all' for a complete list of recognized commands.")
+      print fmt % (name, summary)
+    print """
+See 'repo help <command>' for more information on a specific command.
+"""
 
   def _PrintCommandHelp(self, cmd):
     class _Out(Coloring):
@@ -100,8 +102,6 @@ Displays detailed usage information about a command.
           body = getattr(cmd, bodyAttr)
         except AttributeError:
           return
-        if body == '' or body is None:
-          return
 
         self.nl()
 
@@ -115,39 +115,19 @@ Displays detailed usage information about a command.
         body = body.strip()
         body = body.replace('%prog', me)
 
-        asciidoc_hdr = re.compile(r'^\n?([^\n]{1,})\n([=~-]{2,})$')
         for para in body.split("\n\n"):
           if para.startswith(' '):
             self.write('%s', para)
             self.nl()
             self.nl()
-            continue
-
-          m = asciidoc_hdr.match(para)
-          if m:
-            title = m.group(1)
-            section_type = m.group(2)
-            if section_type[0] in ('=', '-'):
-              p = self.heading
-            else:
-              def _p(fmt, *args):
-                self.write('  ')
-                self.heading(fmt, *args)
-              p = _p
-
-            p('%s', title)
-            self.nl()
-            p('%s', ''.ljust(len(title), section_type[0]))
-            self.nl()
-            continue
-
-          self.wrap.add_flowing_data(para)
-          self.wrap.end_paragraph(1)
+          else:
+            self.wrap.add_flowing_data(para)
+            self.wrap.end_paragraph(1)
         self.wrap.end_paragraph(0)
 
     out = _Out(self.manifest.globalConfig)
-    out._PrintSection('Summary', 'helpSummary')
     cmd.OptionParser.print_help()
+    out._PrintSection('Summary', 'helpSummary')
     out._PrintSection('Description', 'helpDescription')
 
   def _Options(self, p):
@@ -168,10 +148,9 @@ Displays detailed usage information about a command.
       try:
         cmd = self.commands[name]
       except KeyError:
-        print("repo: '%s' is not a repo command." % name, file=sys.stderr)
+        print >>sys.stderr, "repo: '%s' is not a repo command." % name
         sys.exit(1)
 
-      cmd.manifest = self.manifest
       self._PrintCommandHelp(cmd)
 
     else:

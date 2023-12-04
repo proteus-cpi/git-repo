@@ -19,17 +19,11 @@ XML File Format
 A manifest XML file (e.g. 'default.xml') roughly conforms to the
 following DTD:
 
-  <!DOCTYPE manifest [
-    <!ELEMENT manifest (notice?,
-                        remote*,
-                        default?,
-                        manifest-server?,
-                        remove-project*,
-                        project*,
-                        extend-project*,
-                        repo-hooks?)>
-
-    <!ELEMENT notice (#PCDATA)>
+<!DOCTYPE manifest [
+  <!ELEMENT manifest (remote*,
+                      default?,
+                      project*,
+                      add-remote*)>
 
     <!ELEMENT remote (EMPTY)>
     <!ATTLIST remote name         ID    #REQUIRED>
@@ -116,12 +110,6 @@ name specified here is used as the remote name in each project's
 .git/config, and is therefore automatically available to commands
 like `git fetch`, `git remote`, `git pull` and `git push`.
 
-Attribute `alias`: The alias, if specified, is used to override
-`name` to be set as the remote name in each project's .git/config.
-Its value can be duplicated while attribute `name` has to be unique
-in the manifest file. This helps each project to be able to have
-same remote name which actually points to different remote url.
-
 Attribute `fetch`: The Git URL prefix for all projects which use
 this remote.  Each project's name is appended to this prefix to
 form the actual URL used to clone the project.
@@ -136,9 +124,24 @@ Attribute `review`: Hostname of the Gerrit server where reviews
 are uploaded to by `repo upload`.  This attribute is optional;
 if not specified then `repo upload` will not function.
 
-Attribute `revision`: Name of a Git branch (e.g. `master` or
-`refs/heads/master`). Remotes with their own revision will override
-the default revision.
+Attribute `project-name`: Specifies the name of this project used
+by the review server given in the review attribute of this element.
+Only permitted when the remote element is nested inside of a project
+element (see below).  If not given, defaults to the name supplied
+in the project's name attribute.
+
+Element add-remote
+------------------
+
+Adds a remote to an existing project, whose name is given by the
+to-project attribute.  This is functionally equivalent to nesting
+a remote element under the project, but has the advantage that it
+can be specified in the uesr's `local_manifest.xml` to add a remote
+to a project declared by the normal manifest.
+
+The element can be used to add a fork of an existing project that
+the user needs to work with.
+
 
 Element default
 ---------------
@@ -204,10 +207,7 @@ Element project
 
 One or more project elements may be specified.  Each element
 describes a single Git repository to be cloned into the repo
-client workspace.  You may specify Git-submodules by creating a
-nested project.  Git-submodules will be automatically
-recognized and inherit their parent's attributes, but those
-may be overridden by an explicitly specified project element.
+client workspace.
 
 Attribute `name`: A unique name for this project.  The project's
 name is appended onto its remote's fetch URL to generate the actual
@@ -217,9 +217,8 @@ URL to configure the Git remote with.  The URL gets formed as:
 
 where ${remote_fetch} is the remote's fetch attribute and
 ${project_name} is the project's name attribute.  The suffix ".git"
-is always appended as repo assumes the upstream is a forest of
-bare Git repositories.  If the project has a parent element, its
-name will be prefixed by the parent's.
+is always appended as repo assumes the upstream is a forrest of
+bare Git repositories.
 
 The project name must match the name Gerrit knows, if Gerrit is
 being used for code reviews.
@@ -227,8 +226,6 @@ being used for code reviews.
 Attribute `path`: An optional path relative to the top directory
 of the repo client where the Git working directory for this project
 should be placed.  If not supplied the project name is used.
-If the project has a parent element, its path will be prefixed
-by the parent's.
 
 Attribute `remote`: Name of a previously defined remote element.
 If not supplied the remote given by the default element is used.
@@ -341,38 +338,30 @@ Attribute `name`: the manifest to include, specified relative to
 the manifest repository's root.
 
 
-Local Manifests
-===============
+Local Manifest
+==============
 
-Additional remotes and projects may be added through local manifest
-files stored in `$TOP_DIR/.repo/local_manifests/*.xml`.
+Additional remotes and projects may be added through a local
+manifest, stored in `$TOP_DIR/.repo/local_manifest.xml`.
 
 For example:
 
-  $ ls .repo/local_manifests
-  local_manifest.xml
-  another_local_manifest.xml
+----
+	$ cat .repo/local_manifest.xml
+	<?xml version="1.0" encoding="UTF-8"?>
+	<manifest>
+	  <project path="manifest"
+			   name="tools/manifest" />
+	  <project path="platform-manifest"
+			   name="platform/manifest" />
+	</manifest>
+----
 
-  $ cat .repo/local_manifests/local_manifest.xml
-  <?xml version="1.0" encoding="UTF-8"?>
-  <manifest>
-    <project path="manifest"
-             name="tools/manifest" />
-    <project path="platform-manifest"
-             name="platform/manifest" />
-  </manifest>
-
-Users may add projects to the local manifest(s) prior to a `repo sync`
+Users may add projects to the local manifest prior to a `repo sync`
 invocation, instructing repo to automatically download and manage
 these extra projects.
 
-Manifest files stored in `$TOP_DIR/.repo/local_manifests/*.xml` will
-be loaded in alphabetical order.
-
-Additional remotes and projects may also be added through a local
-manifest, stored in `$TOP_DIR/.repo/local_manifest.xml`. This method
-is deprecated in favor of using multiple manifest files as mentioned
-above.
-
-If `$TOP_DIR/.repo/local_manifest.xml` exists, it will be loaded before
-any manifest files stored in `$TOP_DIR/.repo/local_manifests/*.xml`.
+Currently the only supported feature of a local manifest is to
+add new remotes and/or projects.  In the future a local manifest
+may support picking different revisions of a project, or deleting
+projects specified in the default manifest.

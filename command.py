@@ -15,13 +15,9 @@
 
 import os
 import optparse
-import platform
-import re
 import sys
 
 from error import NoSuchProjectError
-from error import InvalidProjectGroupsError
-
 
 class Command(object):
   """Base class for any command line action in repo.
@@ -71,24 +67,6 @@ class Command(object):
     """Initialize the option parser.
     """
 
-  def _RegisteredEnvironmentOptions(self):
-    """Get options that can be set from environment variables.
-
-    Return a dictionary mapping environment variable name
-    to option key name that it can override.
-
-    Example: {'REPO_MY_OPTION': 'my_option'}
-
-    Will allow the option with key value 'my_option' to be set
-    from the value in the environment variable named 'REPO_MY_OPTION'.
-
-    Note: This does not work properly for options that are explicitly
-    set to None by the user, or options that are defined with a
-    default value other than None.
-
-    """
-    return {}
-
   def Usage(self):
     """Display usage and terminate.
     """
@@ -110,20 +88,15 @@ class Command(object):
     project = None
     if os.path.exists(path):
       oldpath = None
-      while path and \
-            path != oldpath and \
-            path != manifest.topdir:
+      while path \
+        and path != oldpath \
+        and path != manifest.topdir:
         try:
           project = self._by_path[path]
           break
         except KeyError:
           oldpath = path
           path = os.path.dirname(path)
-      if not project and path == manifest.topdir:
-        try:
-          project = self._by_path[path]
-        except KeyError:
-          pass
     else:
       try:
         project = self._by_path[path]
@@ -135,9 +108,7 @@ class Command(object):
                   submodules_ok=False):
     """A list of projects that match the arguments.
     """
-    if not manifest:
-      manifest = self.manifest
-    all_projects_list = manifest.projects
+    all = self.manifest.projects
     result = []
 
     mp = manifest.manifestProject
@@ -159,10 +130,10 @@ class Command(object):
         if (missing_ok or project.Exists) and project.MatchesGroups(groups):
           result.append(project)
     else:
-      self._ResetPathToProjectMap(all_projects_list)
+      by_path = None
 
       for arg in args:
-        projects = manifest.GetProjectsWithName(arg)
+        project = all.get(arg)
 
         if not projects:
           path = os.path.abspath(arg).replace('\\', '/')
@@ -182,16 +153,12 @@ class Command(object):
           if project:
             projects = [project]
 
-        if not projects:
+        if not project:
+          raise NoSuchProjectError(arg)
+        if not missing_ok and not project.Exists:
           raise NoSuchProjectError(arg)
 
-        for project in projects:
-          if not missing_ok and not project.Exists:
-            raise NoSuchProjectError(arg)
-          if not project.MatchesGroups(groups):
-            raise InvalidProjectGroupsError(arg)
-
-        result.extend(projects)
+        result.append(project)
 
     def _getpath(x):
       return x.relpath

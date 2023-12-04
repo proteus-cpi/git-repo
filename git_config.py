@@ -13,60 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import print_function
-
-import contextlib
-import errno
-import json
 import os
 import re
-import subprocess
 import sys
-try:
-  import threading as _threading
-except ImportError:
-  import dummy_threading as _threading
-import time
-
-from pyversion import is_python3
-if is_python3():
-  import urllib.request
-  import urllib.error
-else:
-  import urllib2
-  import imp
-  urllib = imp.new_module('urllib')
-  urllib.request = urllib2
-  urllib.error = urllib2
-
-from signal import SIGTERM
-from error import GitError, UploadError
-from trace import Trace
-if is_python3():
-  from http.client import HTTPException
-else:
-  from httplib import HTTPException
-
+from error import GitError
 from git_command import GitCommand
-from git_command import ssh_sock
-from git_command import terminate_ssh_clients
 
 R_HEADS = 'refs/heads/'
 R_TAGS  = 'refs/tags/'
-ID_RE = re.compile(r'^[0-9a-f]{40}$')
-
-REVIEW_CACHE = dict()
+ID_RE = re.compile('^[0-9a-f]{40}$')
 
 def IsId(rev):
   return ID_RE.match(rev)
 
-def _key(name):
-  parts = name.split('.')
-  if len(parts) < 2:
-    return name.lower()
-  parts[ 0] = parts[ 0].lower()
-  parts[-1] = parts[-1].lower()
-  return '.'.join(parts)
 
 class GitConfig(object):
   _ForUser = None
@@ -74,32 +33,26 @@ class GitConfig(object):
   @classmethod
   def ForUser(cls):
     if cls._ForUser is None:
-      cls._ForUser = cls(configfile = os.path.expanduser('~/.gitconfig'))
+      cls._ForUser = cls(file = os.path.expanduser('~/.gitconfig'))
     return cls._ForUser
 
   @classmethod
   def ForRepository(cls, gitdir, defaults=None):
-    return cls(configfile = os.path.join(gitdir, 'config'),
+    return cls(file = os.path.join(gitdir, 'config'),
                defaults = defaults)
 
-  def __init__(self, configfile, defaults=None, jsonFile=None):
-    self.file = configfile
+  def __init__(self, file, defaults=None):
+    self.file = file
     self.defaults = defaults
     self._cache_dict = None
-    self._section_dict = None
     self._remotes = {}
     self._branches = {}
-
-    self._json = jsonFile
-    if self._json is None:
-      self._json = os.path.join(
-        os.path.dirname(self.file),
-        '.repo_' + os.path.basename(self.file) + '.json')
 
   def Has(self, name, include_defaults = True):
     """Return true if this configuration file has the key.
     """
-    if _key(name) in self._cache:
+    name = name.lower()
+    if name in self._cache:
       return True
     if include_defaults and self.defaults:
       return self.defaults.Has(name, include_defaults = True)
@@ -121,20 +74,22 @@ class GitConfig(object):
       return False
     return None
 
-  def GetString(self, name, all_keys=False):
+  def GetString(self, name, all=False):
     """Get the first value for a key, or None if it is not defined.
 
        This configuration file is used first, if the key is not
-       defined or all_keys = True then the defaults are also searched.
+       defined or all = True then the defaults are also searched.
     """
+    name = name.lower()
+
     try:
-      v = self._cache[_key(name)]
+      v = self._cache[name]
     except KeyError:
       if self.defaults:
-        return self.defaults.GetString(name, all_keys = all_keys)
+        return self.defaults.GetString(name, all = all)
       v = []
 
-    if not all_keys:
+    if not all:
       if v:
         return v[0]
       return None
@@ -142,7 +97,7 @@ class GitConfig(object):
     r = []
     r.extend(v)
     if self.defaults:
-      r.extend(self.defaults.GetString(name, all_keys = True))
+      r.extend(self.defaults.GetString(name, all = True))
     return r
 
   def SetString(self, name, value):
@@ -152,16 +107,16 @@ class GitConfig(object):
        The supplied value should be either a string,
        or a list of strings (to store multiple values).
     """
-    key = _key(name)
+    name = name.lower()
 
     try:
-      old = self._cache[key]
+      old = self._cache[name]
     except KeyError:
       old = []
 
     if value is None:
       if old:
-        del self._cache[key]
+        del self._cache[name]
         self._do('--unset-all', name)
 
     elif isinstance(value, list):
@@ -172,13 +127,13 @@ class GitConfig(object):
         self.SetString(name, value[0])
 
       elif old != value:
-        self._cache[key] = list(value)
+        self._cache[name] = list(value)
         self._do('--replace-all', name, value[0])
-        for i in range(1, len(value)):
+        for i in xrange(1, len(value)):
           self._do('--add', name, value[i])
 
     elif len(old) != 1 or old[0] != value:
-      self._cache[key] = [value]
+      self._cache[name] = [value]
       self._do('--replace-all', name, value)
 
   def GetRemote(self, name):
@@ -201,47 +156,6 @@ class GitConfig(object):
       self._branches[b.name] = b
     return b
 
-  def GetSubSections(self, section):
-    """List all subsection names matching $section.*.*
-    """
-    return self._sections.get(section, set())
-
-  def HasSection(self, section, subsection = ''):
-    """Does at least one key in section.subsection exist?
-    """
-    try:
-      return subsection in self._sections[section]
-    except KeyError:
-      return False
-
-  def UrlInsteadOf(self, url):
-    """Resolve any url.*.insteadof references.
-    """
-    for new_url in self.GetSubSections('url'):
-      for old_url in self.GetString('url.%s.insteadof' % new_url, True):
-        if old_url is not None and url.startswith(old_url):
-          return new_url + url[len(old_url):]
-    return url
-
-  @property
-  def _sections(self):
-    d = self._section_dict
-    if d is None:
-      d = {}
-      for name in self._cache.keys():
-        p = name.split('.')
-        if 2 == len(p):
-          section = p[0]
-          subsect = ''
-        else:
-          section = p[0]
-          subsect = '.'.join(p[1:-1])
-        if section not in d:
-          d[section] = set()
-        d[section].add(subsect)
-        self._section_dict = d
-    return d
-
   @property
   def _cache(self):
     if self._cache_dict is None:
@@ -249,66 +163,21 @@ class GitConfig(object):
     return self._cache_dict
 
   def _Read(self):
-    d = self._ReadJson()
-    if d is None:
-      d = self._ReadGit()
-      self._SaveJson(d)
-    return d
-
-  def _ReadJson(self):
-    try:
-      if os.path.getmtime(self._json) \
-      <= os.path.getmtime(self.file):
-        os.remove(self._json)
-        return None
-    except OSError:
-      return None
-    try:
-      Trace(': parsing %s', self.file)
-      fd = open(self._json)
-      try:
-        return json.load(fd)
-      finally:
-        fd.close()
-    except (IOError, ValueError):
-      os.remove(self._json)
-      return None
-
-  def _SaveJson(self, cache):
-    try:
-      fd = open(self._json, 'w')
-      try:
-        json.dump(cache, fd, indent=2)
-      finally:
-        fd.close()
-    except (IOError, TypeError):
-      if os.path.exists(self._json):
-        os.remove(self._json)
-
-  def _ReadGit(self):
-    """
-    Read configuration data from git.
-
-    This internal method populates the GitConfig cache.
-
-    """
-    c = {}
     d = self._do('--null', '--list')
-    if d is None:
-      return c
-    for line in d.decode('utf-8').rstrip('\0').split('\0'):  # pylint: disable=W1401
-                                                             # Backslash is not anomalous
-      if '\n' in line:
-        key, val = line.split('\n', 1)
-      else:
-        key = line
-        val = None
+    c = {}
+    while d:
+      lf = d.index('\n')
+      nul = d.index('\0', lf + 1)
+
+      key = d[0:lf]
+      val = d[lf + 1:nul]
 
       if key in c:
         c[key].append(val)
       else:
         c[key] = [val]
 
+      d = d[nul + 1:]
     return c
 
   def _do(self, *args):
@@ -669,7 +538,9 @@ class Remote(object):
   def ToLocal(self, rev):
     """Convert a remote revision string to something we have locally.
     """
-    if self.name == '.' or IsId(rev):
+    if IsId(rev):
+      return rev
+    if rev.startswith(R_TAGS):
       return rev
 
     if not rev.startswith('refs/'):
@@ -678,10 +549,6 @@ class Remote(object):
     for spec in self.fetch:
       if spec.SourceMatches(rev):
         return spec.MapSource(rev)
-
-    if not rev.startswith(R_HEADS):
-      return rev
-
     raise GitError('remote %s does not have %s' % (self.name, rev))
 
   def WritesTo(self, ref):
@@ -711,15 +578,15 @@ class Remote(object):
       self._Set('pushurl', self.pushUrl)
     self._Set('review', self.review)
     self._Set('projectname', self.projectname)
-    self._Set('fetch', list(map(str, self.fetch)))
+    self._Set('fetch', map(lambda x: str(x), self.fetch))
 
   def _Set(self, key, value):
     key = 'remote.%s.%s' % (self.name, key)
     return self._config.SetString(key, value)
 
-  def _Get(self, key, all_keys=False):
+  def _Get(self, key, all=False):
     key = 'remote.%s.%s' % (self.name, key)
-    return self._config.GetString(key, all_keys = all_keys)
+    return self._config.GetString(key, all = all)
 
 
 class Branch(object):
@@ -747,28 +614,16 @@ class Branch(object):
   def Save(self):
     """Save this branch back into the configuration.
     """
-    if self._config.HasSection('branch', self.name):
-      if self.remote:
-        self._Set('remote', self.remote.name)
-      else:
-        self._Set('remote', None)
-      self._Set('merge', self.merge)
-
+    self._Set('merge', self.merge)
+    if self.remote:
+      self._Set('remote', self.remote.name)
     else:
-      fd = open(self._config.file, 'a')
-      try:
-        fd.write('[branch "%s"]\n' % self.name)
-        if self.remote:
-          fd.write('\tremote = %s\n' % self.remote.name)
-        if self.merge:
-          fd.write('\tmerge = %s\n' % self.merge)
-      finally:
-        fd.close()
+      self._Set('remote', None)
 
   def _Set(self, key, value):
     key = 'branch.%s.%s' % (self.name, key)
     return self._config.SetString(key, value)
 
-  def _Get(self, key, all_keys=False):
+  def _Get(self, key, all=False):
     key = 'branch.%s.%s' % (self.name, key)
-    return self._config.GetString(key, all_keys = all_keys)
+    return self._config.GetString(key, all = all)
