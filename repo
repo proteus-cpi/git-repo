@@ -9,8 +9,9 @@ if not REPO_URL:
   # REPO_URL = 'https://github.com/esrlabs/git-repo'
   REPO_URL = 'https://github.com/proteus-cpi/git-repo.git'
 
-REPO_REV = 'develop'
 #REPO_REV = 'stable'
+#REPO_REV = 'develop'
+REPO_REV = 'tmp-develop'
 
 # Copyright (C) 2008 Google Inc.
 #
